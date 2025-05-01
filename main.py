@@ -1,11 +1,8 @@
-from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeoutError
+from playwright.sync_api import sync_playwright
 import time
 import os
-import random
-import subprocess
-import json
+import re
 from pathlib import Path
-from urllib.parse import quote_plus
 
 
 def get_chrome_user_data_dir():
@@ -13,7 +10,7 @@ def get_chrome_user_data_dir():
     home = Path.home()
     if os.name == "nt":  # Windows
         return os.path.join(home, "AppData", "Local", "Google", "Chrome", "User Data")
-    elif os.name == "posix":  # MacOS/Linux
+    elif os.name == "posix":  # macOS/Linux
         if os.path.exists(os.path.join(home, "Library", "Application Support", "Google", "Chrome")):
             return os.path.join(home, "Library", "Application Support", "Google", "Chrome")
         else:
@@ -21,205 +18,158 @@ def get_chrome_user_data_dir():
     return None
 
 
-def search_restaurants(query="restaurants near me", location="", num_results=5, chrome_path=None, profile_dir=None):
+def google_search_and_extract_text(search_query="site:instagram.com \"fitness Coach\" \"@gmail.com\"", max_pages=3):
     """
-    Search for restaurants on Google using Playwright with existing Chrome profile
+    Search Google with the provided query and extract all visible text from result pages
 
     Args:
-        query (str): Search query (default: "restaurants near me")
-        location (str): Optional location to add to the query
-        num_results (int): Number of search results to save
-        chrome_path (str): Path to Chrome executable
-        profile_dir (str): Path to Chrome user data directory
+        search_query (str): The search query to use
+        max_pages (int): Maximum number of search result pages to process
     """
-    # Combine query and location if provided
-    search_query = query
-    if location:
-        search_query += f" in {location}"
+    # Use fixed paths and settings
+    chrome_path = "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe"
+    user_data_dir = get_chrome_user_data_dir()
+    profile_path = os.path.join(user_data_dir, "Default")
 
-    # Format the query for URL
-    encoded_query = quote_plus(search_query)
-    url = f"https://www.google.com/search?q={encoded_query}"
+    print(f"Starting Google search for: {search_query}")
+    print(f"Using Chrome at: {chrome_path}")
+    print(f"Using profile at: {profile_path}")
 
-    print(f"Searching for: {search_query}")
-    print(f"URL: {url}")
-
-    # Create a filename based on the search query
-    filename = f"restaurant_search_{int(time.time())}.txt"
-
-    # Use default Chrome user data directory if not specified
-    if not profile_dir:
-        profile_dir = get_chrome_user_data_dir()
-        if not profile_dir:
-            print("Error: Could not determine Chrome user data directory.")
-            return None
-
-    print(f"Using Chrome profile from: {profile_dir}")
+    # Create a filename for the output
+    timestamp = int(time.time())
+    filename = f"google_search_text_{timestamp}.txt"
 
     with sync_playwright() as p:
         try:
             # Launch Chrome with the user's existing profile
-            print("Launching Chrome with your existing profile...")
             browser_type = p.chromium
-
-            # Check if chrome_path was provided or use default
-            if chrome_path:
-                print(f"Using Chrome executable at: {chrome_path}")
-                browser = browser_type.launch_persistent_context(
-                    user_data_dir=profile_dir,
-                    executable_path=chrome_path,
-                    headless=False,
-                    args=["--disable-blink-features=AutomationControlled"]
-                )
-            else:
-                browser = browser_type.launch_persistent_context(
-                    user_data_dir=profile_dir,
-                    headless=False,
-                    args=["--disable-blink-features=AutomationControlled"]
-                )
+            browser = browser_type.launch_persistent_context(
+                user_data_dir=profile_path,
+                executable_path=chrome_path,
+                headless=False,
+                args=["--disable-blink-features=AutomationControlled"]
+            )
 
             # Create a new page
             page = browser.new_page()
 
-            # Add anti-bot measures
-            # This script removes navigator.webdriver flag (a common bot detection method)
-            print("Applying anti-detection measures...")
+            # Add anti-detection script
             stealth_js = """
                 Object.defineProperty(navigator, 'webdriver', {
                     get: () => false,
                 });
-
-                // Overwrite the plugins
-                Object.defineProperty(navigator, 'plugins', {
-                    get: () => [1, 2, 3, 4, 5],
-                });
-
-                // Overwrite the languages
-                Object.defineProperty(navigator, 'languages', {
-                    get: () => ['en-US', 'en'],
-                });
-
-                // Mask automation
-                const originalQuery = window.navigator.permissions.query;
-                window.navigator.permissions.query = (parameters) => (
-                    parameters.name === 'notifications' ?
-                    Promise.resolve({ state: Notification.permission }) :
-                    originalQuery(parameters)
-                );
             """
             page.add_init_script(stealth_js)
 
-            # Navigate to search URL
-            print("Navigating to Google search...")
-            page.goto(url, wait_until="networkidle", timeout=60000)
-            print("Page loaded.")
+            # List to store all text content
+            all_text = []
 
-            # Add a slight delay for page to fully render
-            time.sleep(3)
+            # Open the search URL for the first page
+            url = f"https://www.google.com/search?q={search_query.replace(' ', '+')}"
+            print(f"Navigating to: {url}")
 
-            # Take a screenshot for debugging
-            screenshot_path = f"search_page_{int(time.time())}.png"
-            page.screenshot(path=screenshot_path)
-            print(f"Screenshot saved as {screenshot_path}")
+            # Visit each page of search results
+            current_page = 1
 
-            # Check for CAPTCHA and handle it if needed
-            if page.locator("iframe[src*='recaptcha']").count() > 0 or \
-                    page.locator("text=Select all images").count() > 0 or \
-                    page.locator("text=I'm not a robot").count() > 0:
+            while current_page <= max_pages:
+                # Navigate to the current search page
+                page.goto(url, wait_until="networkidle", timeout=60000)
+                print(f"Loaded page {current_page} of search results")
 
-                print("\nCAPTCHA detected! Please solve it manually in the browser window.")
-                print("The script will wait until you complete the CAPTCHA challenge (up to 5 minutes).")
+                # Wait for content to load
+                time.sleep(3)
 
-                # Wait for search results to appear after CAPTCHA is solved
-                try:
-                    page.wait_for_selector("div#search", timeout=300000)  # 5 minute timeout
-                    print("CAPTCHA solved and search results loaded.")
-                except PlaywrightTimeoutError:
-                    print("Timeout waiting for CAPTCHA to be solved.")
-                    return None
+                # Check for CAPTCHA
+                if page.locator("iframe[src*='recaptcha']").count() > 0 or \
+                        page.locator("text=Select all images").count() > 0 or \
+                        page.locator("text=I'm not a robot").count() > 0:
 
-            # Wait for search results to fully load
-            print("Waiting for search results to fully load...")
-            try:
-                # Try to wait for search results to appear
-                page.wait_for_selector("div#search", timeout=30000)
-                print("Search results loaded.")
-            except PlaywrightTimeoutError:
-                print("Timeout waiting for search results, but continuing anyway...")
+                    print("\nCAPTCHA detected! Please solve it manually in the browser window.")
+                    print("The script will wait up to 5 minutes for you to complete it.")
 
-            # Save the content to a text file
-            print("Saving search results to file...")
-            with open(filename, 'w', encoding='utf-8') as file:
-                # Write the search query and timestamp
-                file.write(f"Search Query: {search_query}\n")
-                file.write(f"Search Time: {time.strftime('%Y-%m-%d %H:%M:%S')}\n")
-                file.write("-" * 50 + "\n\n")
-
-                # Try to extract search results
-                search_results = []
-
-                # Try different selectors that Google might use for search results
-                for selector in ["div.g", "div[data-sokoban-container]", "div.Gx5Zad", "div.tF2Cxc"]:
-                    results = page.locator(selector)
-                    if results.count() > 0:
-                        search_results = results
-                        print(f"Found {results.count()} results using selector: {selector}")
+                    # Wait for main content to appear after CAPTCHA
+                    try:
+                        page.wait_for_selector("div#search", timeout=300000)  # 5 minute timeout
+                        print("CAPTCHA solved. Continuing...")
+                    except Exception:
+                        print("Timeout waiting for CAPTCHA to be solved.")
                         break
 
-                # Extract and save results
-                if search_results and search_results.count() > 0:
-                    count = min(search_results.count(), num_results)
+                # Take a screenshot for reference
+                page.screenshot(path=f"page_{current_page}_{timestamp}.png")
 
-                    for i in range(count):
-                        try:
-                            result = search_results.nth(i)
+                # Extract all visible text content from the page (similar to Ctrl+A Copy)
+                print("Extracting visible text from page...")
 
-                            # Extract title using various potential selectors
-                            title = "No Title Found"
-                            for title_selector in ["h3", "h3.LC20lb", "div.yuRUbf h3"]:
-                                title_element = result.locator(title_selector).first
-                                if title_element.count() > 0:
-                                    title = title_element.text_content().strip()
-                                    break
+                # Use JavaScript to get all visible text on the page
+                # This simulates what you'd get with Ctrl+A and copy
+                text_content = page.evaluate("""() => {
+                    function isVisible(elem) {
+                        if (!elem) return false;
+                        const style = window.getComputedStyle(elem);
+                        return style.display !== 'none' && 
+                               style.visibility !== 'hidden' && 
+                               style.opacity !== '0' &&
+                               elem.offsetWidth > 0 &&
+                               elem.offsetHeight > 0;
+                    }
 
-                            # Extract link
-                            link = "No Link Found"
-                            for link_selector in ["a", "div.yuRUbf a", "div.egMi0 a"]:
-                                link_element = result.locator(link_selector).first
-                                if link_element.count() > 0:
-                                    href = link_element.get_attribute("href")
-                                    if href:
-                                        link = href
-                                        break
+                    function getVisibleText(node) {
+                        if (node.nodeType === Node.TEXT_NODE) {
+                            return node.nodeValue.trim();
+                        }
 
-                            # Extract snippet
-                            snippet = "No Snippet Found"
-                            for snippet_selector in ["div.VwiC3b", "div.lyLwlc", "span.aCOpRe"]:
-                                snippet_element = result.locator(snippet_selector).first
-                                if snippet_element.count() > 0:
-                                    snippet = snippet_element.text_content().strip()
-                                    break
+                        if (node.nodeType !== Node.ELEMENT_NODE) {
+                            return '';
+                        }
 
-                            # Write the result to the file
-                            file.write(f"Result #{i + 1}\n")
-                            file.write(f"Title: {title}\n")
-                            file.write(f"Link: {link}\n")
-                            file.write(f"Snippet: {snippet}\n")
-                            file.write("-" * 50 + "\n\n")
+                        // Skip script, style, and hidden elements
+                        const tagName = node.tagName.toLowerCase();
+                        if (tagName === 'script' || tagName === 'style' || tagName === 'noscript' || !isVisible(node)) {
+                            return '';
+                        }
 
-                        except Exception as e:
-                            file.write(f"Error extracting result #{i + 1}: {str(e)}\n")
-                            file.write("-" * 50 + "\n\n")
+                        let text = '';
+                        for (const childNode of node.childNodes) {
+                            text += getVisibleText(childNode) + ' ';
+                        }
+                        return text.trim();
+                    }
+
+                    return getVisibleText(document.body);
+                }""")
+
+                # Clean up the text (remove extra spaces, etc.)
+                if text_content:
+                    # Remove multiple spaces and newlines
+                    cleaned_text = re.sub(r'\\s+', ' ', text_content).strip()
+                    all_text.append(f"--- PAGE {current_page} ---\n\n{cleaned_text}\n\n")
+                    print(f"Extracted {len(cleaned_text)} characters of text")
                 else:
-                    file.write(
-                        "No search results could be extracted. The page structure may have changed or results are not available.\n\n")
+                    print("No text content found on this page")
 
-                # Also write the full HTML content
-                file.write("FULL PAGE CONTENT:\n")
-                file.write("=" * 50 + "\n\n")
-                file.write(page.content())
+                # Check if there's a next page button
+                next_button = page.locator("a#pnnext")
+                if next_button.count() > 0:
+                    # Get the URL for the next page
+                    url = next_button.get_attribute("href")
+                    if not url.startswith("http"):
+                        url = "https://www.google.com" + url
+                    current_page += 1
+                    print(f"Found link to next page: {url}")
+                else:
+                    print("No more result pages available")
+                    break
 
-            print(f"Search completed. Results saved to {filename}")
+            # Save all text to file
+            with open(filename, 'w', encoding='utf-8') as f:
+                f.write(f"Search Query: {search_query}\n")
+                f.write(f"Extraction Time: {time.strftime('%Y-%m-%d %H:%M:%S')}\n")
+                f.write("=" * 50 + "\n\n")
+                f.write("\n".join(all_text))
+
+            print(f"\nSearch and extraction complete!")
+            print(f"Visible text content saved to: {os.path.abspath(filename)}")
 
             # Close the browser
             browser.close()
@@ -227,90 +177,16 @@ def search_restaurants(query="restaurants near me", location="", num_results=5, 
 
         except Exception as e:
             print(f"An error occurred: {str(e)}")
-            # Take a screenshot to help debug the issue
+            # Try to take an error screenshot
             try:
-                page.screenshot(path=f"error_screenshot_{int(time.time())}.png")
-                print(f"Error screenshot saved")
+                page.screenshot(path=f"error_{timestamp}.png")
+                print(f"Error screenshot saved as error_{timestamp}.png")
             except:
-                print("Could not save error screenshot")
+                pass
             return None
 
 
-def list_chrome_profiles(user_data_dir):
-    """List available Chrome profiles for the user to choose from"""
-    profiles = []
-    try:
-        # Look for Profile directories and the Default profile
-        default_profile = os.path.join(user_data_dir, "Default")
-        if os.path.exists(default_profile):
-            profiles.append(("Default", default_profile))
-
-        # Look for numbered profiles
-        for item in os.listdir(user_data_dir):
-            if item.startswith("Profile ") and os.path.isdir(os.path.join(user_data_dir, item)):
-                profiles.append((item, os.path.join(user_data_dir, item)))
-
-        return profiles
-    except Exception as e:
-        print(f"Error listing Chrome profiles: {str(e)}")
-        return []
-
-
-def main():
-    """Main function to run the restaurant search"""
-    print("Google Restaurant Search using Your Chrome Profile")
-    print("=" * 45)
-
-    # Get Chrome executable path
-    default_chrome_path = "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe"
-    chrome_path = input(f"Enter Chrome executable path (default: {default_chrome_path}): ") or default_chrome_path
-
-    # Get or detect Chrome user data directory
-    default_user_data_dir = get_chrome_user_data_dir()
-    user_data_dir = input(
-        f"Enter Chrome user data directory (default: {default_user_data_dir}): ") or default_user_data_dir
-
-    # List available profiles
-    profiles = list_chrome_profiles(user_data_dir)
-    if profiles:
-        print("\nAvailable Chrome profiles:")
-        for i, (name, path) in enumerate(profiles):
-            print(f"{i + 1}. {name}")
-
-        try:
-            profile_index = int(input("\nSelect profile number (default: 1): ") or "1") - 1
-            if 0 <= profile_index < len(profiles):
-                profile_name, profile_path = profiles[profile_index]
-                print(f"Using profile: {profile_name}")
-            else:
-                print("Invalid selection. Using Default profile.")
-                profile_path = os.path.join(user_data_dir, "Default")
-        except ValueError:
-            print("Invalid input. Using Default profile.")
-            profile_path = os.path.join(user_data_dir, "Default")
-    else:
-        print("No Chrome profiles found. Using Default profile.")
-        profile_path = os.path.join(user_data_dir, "Default")
-
-    # Get search parameters from user
-    query = input("\nEnter search query (default: 'restaurants near me'): ") or "restaurants near me"
-    location = input("Enter location (optional, press Enter to skip): ")
-
-    try:
-        num_results = int(input("Number of results to extract (default: 5): ") or "5")
-    except ValueError:
-        num_results = 5
-        print("Invalid input. Using default value: 5")
-
-    # Perform the search
-    filename = search_restaurants(query, location, num_results, chrome_path, profile_path)
-
-    if filename:
-        print(f"\nSearch completed successfully!")
-        print(f"Results saved to: {os.path.abspath(filename)}")
-    else:
-        print("\nSearch failed. Please try again later.")
-
-
 if __name__ == "__main__":
-    main()
+    # Use hardcoded search query directly - no prompts
+    search_query = 'site:instagram.com "fitness Coach" "@gmail.com"'
+    google_search_and_extract_text(search_query)
