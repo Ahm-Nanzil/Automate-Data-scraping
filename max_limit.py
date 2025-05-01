@@ -17,7 +17,7 @@ def get_chrome_user_data_dir():
     return None
 
 
-def google_search_extract_emails(search_query="site:instagram.com \"fitness Coach\" \"@gmail.com\""):
+def google_search_extract_emails(search_query="site:instagram.com \"fitness Coach\" \"@gmail.com\"", max_pages=1):
     chrome_path = "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe"
     user_data_dir = get_chrome_user_data_dir()
     profile_path = os.path.join(user_data_dir, "Default")
@@ -52,7 +52,7 @@ def google_search_extract_emails(search_query="site:instagram.com \"fitness Coac
             url = f"https://www.google.com/search?q={search_query.replace(' ', '+')}"
             current_page = 1
 
-            while True:
+            while current_page <= max_pages:
                 page.goto(url, wait_until="networkidle", timeout=60000)
                 print(f"Loaded page {current_page} of search results")
                 time.sleep(3)
@@ -71,7 +71,7 @@ def google_search_extract_emails(search_query="site:instagram.com \"fitness Coac
                         print("Timeout waiting for CAPTCHA to be solved.")
                         break
 
-                # Extract emails
+                # Get visible text
                 text_content = page.evaluate("() => document.body.innerText")
                 emails = re.findall(r'[a-zA-Z0-9_.+-]+@gmail\.com', text_content)
                 found_count = len(emails)
@@ -80,7 +80,6 @@ def google_search_extract_emails(search_query="site:instagram.com \"fitness Coac
 
                 all_emails.update(unique_emails)
 
-                # Check for next page
                 next_button = page.locator("a#pnnext")
                 if next_button.count() > 0:
                     url = next_button.get_attribute("href")
