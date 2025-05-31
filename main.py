@@ -6,21 +6,14 @@ from pathlib import Path
 
 
 def get_chrome_user_data_dir():
-    home = Path.home()
-    if os.name == "nt":
-        return os.path.join(home, "AppData", "Local", "Google", "Chrome", "User Data")
-    elif os.name == "posix":
-        if os.path.exists(os.path.join(home, "Library", "Application Support", "Google", "Chrome")):
-            return os.path.join(home, "Library", "Application Support", "Google", "Chrome")
-        else:
-            return os.path.join(home, ".config", "google-chrome")
-    return None
+    # Overridden to return your specific profile path
+    return "C:\\Users\\ASUS\\AppData\\Local\\Google\\Chrome for Testing\\User Data\\Profile 3"
 
 
 def google_search_extract_emails(search_query="site:instagram.com \"fitness Coach\" \"@gmail.com\""):
-    chrome_path = "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe"
+    chrome_path = "C:\\Users\\ASUS\\Downloads\\chrome-win64\\chrome-win64\\chrome.exe"
     user_data_dir = get_chrome_user_data_dir()
-    profile_path = os.path.join(user_data_dir, "Default")
+    profile_path = user_data_dir  # Direct path as per your request
 
     print(f"Starting Google search for: {search_query}")
     print(f"Using Chrome at: {chrome_path}")
