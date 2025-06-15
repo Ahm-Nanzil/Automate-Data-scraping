@@ -1,93 +1,144 @@
-import requests
-from bs4 import BeautifulSoup
-import re
-from urllib.parse import urlparse, parse_qs
+from selenium import webdriver
+from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.chrome.service import Service
+from selenium.webdriver.common.by import By
 import time
+import re
+from datetime import datetime
 
 
-def scrape_scholarships(field):
-    # Step 1: Perform Google Search
-    user_search_query = f"scholarships for {field} students 2024"
-    formatted_query = user_search_query.replace(" ", "+")
-    search_url = f"https://www.google.com/search?q={formatted_query}&gl=us"
+def setup_chrome_driver():
+    """Setup Chrome driver with custom profile"""
+    options = Options()
+    options.binary_location = r"C:\Users\ASUS\Downloads\chrome-win64\chrome-win64\chrome.exe"
+    options.add_argument(r"--user-data-dir=C:\Users\ASUS\AppData\Local\Google\Chrome for Testing\User Data")
+    options.add_argument(r"--profile-directory=Profile 3")
+    options.add_experimental_option("excludeSwitches", ["enable-automation"])
+    options.add_experimental_option('useAutomationExtension', False)
 
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
-        "Accept-Language": "en-US,en;q=0.9"
-    }
+    service = Service(r"C:\Users\ASUS\Downloads\chromedriver-win64\chromedriver-win64\chromedriver.exe")
+    driver = webdriver.Chrome(service=service, options=options)
+    return driver
+
+
+def simple_scholarship_search(search_query="scholarships computer science 2024"):
+    """Simple scholarship search - just get scholarship names and universities"""
+
+    print(f"Searching for: {search_query}")
+    driver = setup_chrome_driver()
 
     try:
-        response = requests.get(search_url, headers=headers)
-        response.raise_for_status()
+        # Go to Google
+        search_url = f"https://www.google.com/search?q={search_query.replace(' ', '+')}"
+        driver.get(search_url)
+        time.sleep(5)  # Wait for page to load
 
-        # Step 2: Extract Data from Search Results
-        soup = BeautifulSoup(response.text, 'html.parser')
-        scholarship_results = []
+        scholarships = []
 
-        # Current Google result containers (June 2024)
-        for result in soup.select('div[data-header-feature="0"]'):
+        # Get all search result titles and links
+        results = driver.find_elements(By.CSS_SELECTOR, "h3")
+
+        for result in results:
             try:
-                title = result.select_one('h3').text if result.select_one('h3') else "No title"
-                snippet = ""
+                title = result.text.strip()
+                if title and is_scholarship(title):
+                    # Get the link
+                    link_element = result.find_element(By.XPATH, "./parent::a")
+                    url = link_element.get_attribute("href")
 
-                # Try multiple selectors for snippet
-                for selector in ['.VwiC3b', '.MUxGbd', '.lyLwlc']:
-                    if result.select_one(selector):
-                        snippet = result.select_one(selector).text
-                        break
+                    # Extract scholarship name and university
+                    scholarship_name = extract_scholarship_name(title)
+                    university_name = extract_university_name(title)
 
-                # Extract URL
-                raw_url = result.select_one('a')['href'] if result.select_one('a') else ""
-                url = ""
-                if raw_url.startswith('/url?'):
-                    parsed = urlparse(raw_url)
-                    qs = parse_qs(parsed.query)
-                    url = qs.get('q', [''])[0]
-
-                # Filter for scholarship results
-                if any(keyword in title.lower() for keyword in ['scholarship', 'grant', 'funding']):
-                    # Extract deadline
-                    deadline_match = re.search(
-                        r'(\b\d{1,2}[/-]\d{1,2}[/-]\d{2,4}\b|(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]* \d{1,2},? \d{4})',
-                        snippet, re.IGNORECASE)
-                    deadline = deadline_match.group(0) if deadline_match else "Not specified"
-
-                    # Extract amount
-                    amount_match = re.search(r'\$\d{1,3}(?:,\d{3})*(?:\.\d{2})?|\d+\s*(?:dollars|USD)', snippet,
-                                             re.IGNORECASE)
-                    amount = amount_match.group(0) if amount_match else "Not specified"
-
-                    # Extract eligibility
-                    eligibility_match = re.search(r'(open to|eligible for|for).*?(\.|$)', snippet, re.IGNORECASE)
-                    eligibility = eligibility_match.group(0).strip() if eligibility_match else "See website"
-
-                    scholarship_results.append({
-                        'title': title,
-                        'url': url,
-                        'deadline': deadline,
-                        'amount': amount,
-                        'eligibility': eligibility
+                    scholarships.append({
+                        'scholarship': scholarship_name,
+                        'university': university_name,
+                        'url': url
                     })
+
             except Exception as e:
                 continue
 
-        # Step 4: Save to File
-        output_file = "scholarships.txt"
-        with open(output_file, 'w', encoding='utf-8') as f:
-            for entry in scholarship_results:
-                f.write(f"Title: {entry['title']}\n")
-                f.write(f"URL: {entry['url']}\n")
-                f.write(f"Deadline: {entry['deadline']}\n")
-                f.write(f"Amount: {entry['amount']}\n")
-                f.write(f"Eligibility: {entry['eligibility']}\n\n")
+        # Save to file
+        save_simple_results(scholarships, search_query)
+        return scholarships
 
-        print(f"Saved {len(scholarship_results)} scholarships to {output_file}")
+    except Exception as e:
+        print(f"Error: {str(e)}")
+        return []
 
-    except requests.exceptions.RequestException as e:
-        print(f"Error fetching search results: {e}")
+    finally:
+        driver.quit()
+
+
+def is_scholarship(title):
+    """Check if title contains scholarship-related words"""
+    keywords = ['scholarship', 'grant', 'fellowship', 'award', 'funding']
+    return any(keyword.lower() in title.lower() for keyword in keywords)
+
+
+def extract_scholarship_name(title):
+    """Extract scholarship name from title"""
+    # Remove common prefixes and clean up
+    title = re.sub(r'^(Apply for|Get|Find|Top|Best)\s+', '', title, flags=re.IGNORECASE)
+
+    # If it contains "Scholarship", take everything before " - " or " | "
+    if 'scholarship' in title.lower():
+        parts = re.split(r'\s*[-|]\s*', title)
+        for part in parts:
+            if 'scholarship' in part.lower():
+                return part.strip()
+
+    return title.strip()
+
+
+def extract_university_name(title):
+    """Extract university name from title"""
+    # Common university patterns
+    university_patterns = [
+        r'(University of [^-|]+)',
+        r'([^-|]+ University)',
+        r'([^-|]+ College)',
+        r'([^-|]+ Institute)',
+        r'(MIT|Harvard|Stanford|Yale|Princeton|Columbia|NYU|UCLA|USC)',
+    ]
+
+    for pattern in university_patterns:
+        matches = re.findall(pattern, title, re.IGNORECASE)
+        if matches:
+            return matches[0].strip()
+
+    # If no university found, try to extract from parts after "-" or "|"
+    parts = re.split(r'\s*[-|]\s*', title)
+    if len(parts) > 1:
+        return parts[-1].strip()
+
+    return "Not specified"
+
+
+def save_simple_results(scholarships, search_query):
+    """Save simple results to file"""
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    filename = f"scholarships_simple_{timestamp}.txt"
+
+    with open(filename, 'w', encoding='utf-8') as f:
+        f.write(f"Scholarship Search Results\n")
+        f.write(f"Search: {search_query}\n")
+        f.write(f"Date: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+        f.write("=" * 50 + "\n\n")
+
+        for i, item in enumerate(scholarships, 1):
+            f.write(f"{i}. Scholarship: {item['scholarship']}\n")
+            f.write(f"   University: {item['university']}\n")
+            f.write(f"   URL: {item['url']}\n\n")
+
+    print(f"Saved {len(scholarships)} results to {filename}")
 
 
 if __name__ == "__main__":
-    field = input("Enter field of study (e.g., Computer Science): ")
-    scrape_scholarships(field)
-    time.sleep(2)  # Avoid rapid requests
+    query = input("Enter search query (or press Enter for default): ").strip()
+    if not query:
+        query = "computer science scholarships 2024"
+
+    results = simple_scholarship_search(query)
+    print(f"Found {len(results)} scholarships")
